@@ -17,14 +17,27 @@ import (
 
 // A PuzzleInfo holds the interesting details from a .puzzle file
 type PuzzleInfo struct {
-	Filename, Dir string
-	Title         string
-	Author        string
-	Comment       string
-	Warnings      []string
-	NPieceFiles   int
-	NPiecesDecl   int
-	ImageFileSize int64
+	// Which directory the file was found in (from filepath.Split)
+	Dir            string
+	// The name of the file itself
+	Filename       string
+	// The title specified when the puzzle was created
+	Title          string
+	// The "author" specified when the puzzle was created (name of painter
+	// or photographer etc; "?" if unknown)
+	Author         string
+	// The comment field from puzzle creation; usually empty
+	Comment        string
+	// Any warnings about missing N.png files
+	Warnings       []string
+	// The number of N.png files in the tarball
+	NPieceFiles    int
+	// The number of pieces specified in the tarball's pala.desktop file
+	NPiecesDecl    int
+	// The size of the tarball's image.jpg in bytes
+	ImageFileSize  int64
+	// The size of the .puzzle file in bytes
+	PuzzleFileSize int64
 }
 
 var rePieceName = regexp.MustCompile(`^(\d+)\.png$`)
@@ -41,6 +54,11 @@ func ScanPuzzle(fs string) (*PuzzleInfo, error) {
 	}
 	defer f.Close()
 	ret.Dir, ret.Filename = filepath.Split(fs)
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, &Error{"cannot examine", fs, err}	// Should never happen
+	}
+	ret.PuzzleFileSize = fi.Size()
 
 	zr, err := gzip.NewReader(f)
 	if err != nil {
@@ -78,7 +96,8 @@ func ScanPuzzle(fs string) (*PuzzleInfo, error) {
 		} else if header.Name == "image.jpg" {
 			ret.ImageFileSize = header.Size
 		} else if header.Name == "pala.desktop" {
-			if e := scanPalaDesktopFile(tr, ret); e != nil {
+			e := scanPalaDesktopFile(tr, ret)
+			if e != nil {
 				e.FilePath = fs
 				return nil, e
 			}
@@ -100,7 +119,7 @@ func ScanPuzzle(fs string) (*PuzzleInfo, error) {
 }
 
 func scanPalaDesktopFile(tr io.Reader, out *PuzzleInfo) *Error {
-	s := bufio.NewScanner(tr)
+	s := bufio.NewScanner(tr) // Process one line at a time
 	for s.Scan() {
 		if m := reKeyValue.FindStringSubmatch(s.Text()); m != nil {
 			key, value := m[1], strings.TrimSpace(m[2])
@@ -123,6 +142,7 @@ func scanPalaDesktopFile(tr io.Reader, out *PuzzleInfo) *Error {
 		}
 	}
 	if s.Err() != nil {
+		// Caller will fixup .FilePath in Error struct.
 		return &Error{`cannot read "pala.desktop" member in `, "?", s.Err()}
 	}
 	return nil
@@ -136,9 +156,11 @@ type Error struct { // Order must match ‘return &Error{"what", which, e}’ ab
 
 func (e *Error) Error() string {
 	be, baseErrStr := e.BaseError, ""
-	if be2, ok := be.(*os.PathError); ok {
-		be = be2.Err
+	if be != nil {
+		if be2, ok := be.(*os.PathError); ok {
+			be = be2.Err
+		}
+		baseErrStr = `: ` + be.Error()
 	}
-	baseErrStr = `: ` + be.Error()
 	return `cannot ` + e.Action + ` "` + e.FilePath + `"` + baseErrStr
 }
